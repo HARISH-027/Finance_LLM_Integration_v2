@@ -1,4 +1,5 @@
 import datetime
+import logging
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional
@@ -24,6 +25,8 @@ from modes.trial_balance.pipeline.tools.classify_document import (
     classify_tb_document,
 )
 from modes.trial_balance.pipeline.tools.document_metadata import FrameworkResolution
+from modes.trial_balance.pipeline.tools.erp_adapter_integration import enrich_parsed_input_with_erp_adapter
+from modes.trial_balance.pipeline.tools.erp_persistence import upsert_tb_erp_classification, upsert_tb_scope
 from modes.trial_balance.pipeline.tools.input_dispatch import UnsupportedInputError, parse_tb_input
 from modes.trial_balance.pipeline.tools.input_grouping_shape import GroupingShape
 from modes.trial_balance.pipeline.tools.input_intake_checks import assess_ingestion_intake
@@ -33,6 +36,9 @@ from modes.trial_balance.pipeline.tools.input_scenario_b import DuplicateTbNoGro
 from modes.trial_balance.pipeline.tools.input_scenario_c import CombinedWorkbookStructureError
 from modes.trial_balance.pipeline.tools.input_scenario_d import AmbiguousGroupingSourceError, AmbiguousTbYearError
 from modes.trial_balance.pipeline.tools.pipeline_tool import *  # noqa: F401,F403
+from modes.trial_balance.pipeline.tools.tb_erp_contracts import ERPType
+
+logger = logging.getLogger(__name__)
 
 
 @pipeline_tool("delete_db_document", domain="db_bridge")
@@ -78,6 +84,7 @@ def _normalized_rows_to_canonical_dicts(tb_doc_id: str, rows: list, custom_field
 def _ingest_one_parsed_document(
     parsed, standard, llm_client, accept_data_quality_risk, out_dir, custom_fields=None,
     intake_warnings=None, metadata_overrides=None, persist_to_live=True, user_id=None,
+    source_files=None, erp_type=None,
 ) -> dict:
     """Classifies and writes ONE ParsedInput (one fiscal year) to LIVE
     staging. Shared by the single-document and multi-year (Scenario D)
@@ -94,10 +101,24 @@ def _ingest_one_parsed_document(
     `persist_to_live=False` runs the exact same classify/quality-gate/confirmation
     chain and still writes canonical_tb.parquet, but skips both the duplicate-
     document check and the LIVE write entirely -- used by the query-analysis
-    staging path (session-only, nothing reaches live_document_table/live_tb_table)."""
+    staging path (session-only, nothing reaches live_document_table/live_tb_table).
+
+    `source_files`/`erp_type`: TB Multi-ERP Adaptability wiring (Tally/SAP only --
+    Oracle not built). `source_files` is the original input file list, only passed
+    by ingest_tb_to_live when exactly one ParsedInput was produced (Scenario D's
+    per-year file association isn't recoverable here, so multi-year documents are
+    never enriched). Best-effort: enrich_parsed_input_with_erp_adapter never raises
+    and returns None for anything that isn't Tally/SAP-shaped, leaving this function's
+    behavior identical to before this wiring existed."""
     metadata = parsed.metadata
     if metadata_overrides:
         metadata = replace(metadata, **{k: v for k, v in metadata_overrides.items() if v})
+
+    erp_enrichment = None
+    if source_files is not None:
+        erp_enrichment = enrich_parsed_input_with_erp_adapter(source_files, parsed, explicit_erp_type=erp_type)
+        if erp_enrichment is not None:
+            parsed = replace(parsed, grouping_hints=erp_enrichment.enriched_grouping_hints)
 
     tb_doc_id = build_tb_doc_id(
         company_name=metadata.company_name,
@@ -160,6 +181,12 @@ def _ingest_one_parsed_document(
             if existing_doc else None
         )
         _, rows_written = upsert_live_document_and_lines(doc_row, out_df.to_dicts())
+        if erp_enrichment is not None:
+            try:
+                upsert_tb_scope(tb_doc_id, erp_enrichment.scope)
+                upsert_tb_erp_classification(tb_doc_id, erp_enrichment.classification_by_gl_code)
+            except Exception:
+                logger.warning("ERP scope/classification persistence failed for %s; LIVE document still written", tb_doc_id, exc_info=True)
     else:
         rows_written = out_df.height
 
@@ -187,6 +214,8 @@ def _ingest_one_parsed_document(
         ],
         "replaced_existing_document": replaced_existing_document,
         "persisted_to_live": persist_to_live,
+        "erp_type": erp_enrichment.erp_type.value if erp_enrichment else None,
+        "erp_findings": erp_enrichment.findings if erp_enrichment else [],
         "db_refs": (
             {"tb_doc_id": tb_doc_id, "table": "live_tb_table", "ingested_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
             if persist_to_live else None
@@ -222,6 +251,7 @@ def ingest_tb_to_live(
     financial_year: str = None,
     persist_to_live: bool = True,
     user_id: str = None,
+    erp_type: str = None,
 ) -> dict:
     """Ingest one or two client-submitted TB workbook(s) into LIVE staging
     (live_document_table/live_tb_table) and produce canonical_tb.parquet
@@ -280,7 +310,22 @@ def ingest_tb_to_live(
     Depends(require_user)) is recorded on the LIVE document row it creates --
     that's what GET/DELETE /documents/{doc_id} check ownership against. None
     is accepted (not required) since this tool is also callable deterministically
-    without an HTTP request in front of it; router.py always supplies it."""
+    without an HTTP request in front of it; router.py always supplies it.
+
+    `erp_type` ("tally"/"sap" -- Oracle not yet built) opts into the TB Multi-ERP
+    Adaptability upgrade's ERP-specific classification/scope extraction and
+    scope-aware quality-gate findings (see erp_adapter_integration.py). Automatic
+    detection also runs when this is omitted, but resolves to UNKNOWN for almost
+    any real upload (it relies on the file's own path containing "SAP"/"Tally" as
+    a segment, true for this project's own test fixtures, essentially never true
+    for a real upload's temp path) -- so in practice this is currently opt-in only.
+    Internal/pipeline-layer only for now: not yet exposed through router.py's
+    /upload-mapped request model. Ignored (falls back to auto-detection) for an
+    unrecognized value, and for any input that resolves to more than one fiscal
+    year (Scenario D) -- there's no way to recover which source file backs which
+    year's document at this layer, so multi-year documents are never enriched.
+    Never blocks or fails ingestion: on any adapter/detection error, ingestion
+    proceeds exactly as it would without this parameter."""
     input_files = [Path(tb_grouping_template_path)]
     if grouping_file_path:
         input_files.append(Path(grouping_file_path))
@@ -326,6 +371,13 @@ def ingest_tb_to_live(
     base_out_dir = resolve_output_dir(output_dir)
     multi_year = len(parsed_inputs) > 1
 
+    erp_type_enum = None
+    if erp_type:
+        try:
+            erp_type_enum = ERPType(erp_type.strip().lower())
+        except ValueError:
+            erp_type_enum = None  # unrecognized value -- falls back to auto-detection, never raises
+
     # A single explicit company_name/cin/financial_year override doesn't make sense
     # forced onto several distinct fiscal-year documents detected from one file
     # (Scenario D) -- only applied for the ordinary one-document case. Accounting
@@ -354,6 +406,8 @@ def ingest_tb_to_live(
             metadata_overrides=metadata_overrides,
             persist_to_live=persist_to_live,
             user_id=user_id,
+            source_files=(input_files if not multi_year else None),
+            erp_type=erp_type_enum,
         )
         for parsed in parsed_inputs
     ]

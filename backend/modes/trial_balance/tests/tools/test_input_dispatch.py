@@ -4,11 +4,21 @@ import-checking. Scenario D (multi-year) is covered separately since it
 needs multi-sheet fixtures with year-bearing names.
 """
 
+from pathlib import Path
+
 import openpyxl
 import pytest
 
 from modes.trial_balance.pipeline.tools.input_dispatch import parse_tb_input, parse_tb_input_single_year
 from modes.trial_balance.pipeline.tools.input_scenario_a import COMPANY_DETAILS_SHEET, TB_GROUPING_SHEET
+from modes.trial_balance.pipeline.tools.input_scenario_b import classify_workbooks, parse_tb_grouping_pair
+
+_GURUGRAM_DIR = (
+    Path(__file__).parents[2]
+    / "documentation" / "ERP_system_standardized_files" / "Tally" / "Gurugram_Metro_Rail_Limited"
+)
+_GURUGRAM_TB_FILE = _GURUGRAM_DIR / "Gurugram_Metro_Rail_Limited_Master_Trial_Balance_Head_Sub_CAG__TB25-26__be041db1.xlsx"
+_GURUGRAM_GROUPING_FILE = _GURUGRAM_DIR / "Gurugram_Metro_Rail_Limited_Master_Trial_Balance_Head_Sub_CAG__Grouping__5e8045cb.xlsx"
 
 
 def _write_workbook(path, sheets: dict):
@@ -142,3 +152,36 @@ def test_missing_gl_code_column_raises_unsupported_or_structure_error(tmp_path):
 
     with pytest.raises(Exception):
         parse_tb_input_single_year([path])
+
+
+@pytest.mark.skipif(not _GURUGRAM_TB_FILE.exists(), reason="Gurugram real-file fixture not present")
+def test_gurugram_tally_pair_classified_correctly_order1():
+    """Regression for a real misclassification: the Grouping file's `GL
+    CODE` column is all-placeholder ("NA"), and the genuine TB file
+    (Particulars/Head/Sub-Head/Closing Balance, no gl_code at all) must
+    still win as the TB, not the Grouping file."""
+    tb_path, grouping_path = classify_workbooks([_GURUGRAM_TB_FILE, _GURUGRAM_GROUPING_FILE])
+    assert tb_path == _GURUGRAM_TB_FILE
+    assert grouping_path == _GURUGRAM_GROUPING_FILE
+
+
+@pytest.mark.skipif(not _GURUGRAM_TB_FILE.exists(), reason="Gurugram real-file fixture not present")
+def test_gurugram_tally_pair_classified_correctly_order2():
+    """Content-based classification, never order-based."""
+    tb_path, grouping_path = classify_workbooks([_GURUGRAM_GROUPING_FILE, _GURUGRAM_TB_FILE])
+    assert tb_path == _GURUGRAM_TB_FILE
+    assert grouping_path == _GURUGRAM_GROUPING_FILE
+
+
+@pytest.mark.skipif(not _GURUGRAM_TB_FILE.exists(), reason="Gurugram real-file fixture not present")
+def test_gurugram_tb_rows_nonempty_and_split_closing_balance_correct():
+    """Once classification is fixed, rows must not be silently dropped for
+    having no gl_code (Tally has none) -- and the two-row Debit/Credit
+    sub-header under "Closing Balance" must be read as a signed split
+    balance, not misread as period debit/credit movement."""
+    parsed = parse_tb_grouping_pair(_GURUGRAM_TB_FILE, _GURUGRAM_GROUPING_FILE)
+    assert len(parsed.tb_rows) > 0
+
+    row = next((r for r in parsed.tb_rows if r.gl_name == "Equity Share Capital-GoI"), None)
+    assert row is not None, "expected ledger row not found in parsed TB rows"
+    assert row.closing == -1_100_000_000  # pure-credit row: Debit=0, Credit=1,100,000,000

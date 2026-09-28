@@ -85,14 +85,14 @@ class TestUpsertLiveDocument:
     def test_custom_fields_default_to_null_when_not_supplied(self, doc_id):
         upsert_live_document(_doc_row(doc_id))
         row = _fetch_live_document(doc_id)
-        assert row["custom_field_1"] is None
-        assert row["custom_field_2"] is None
+        assert row["erp_system"] is None
+        assert row["currency"] is None
         assert row["custom_field_3"] is None
 
     def test_custom_fields_pass_through_when_supplied(self, doc_id):
-        upsert_live_document(_doc_row(doc_id, custom_field_1="cf1-value"))
+        upsert_live_document(_doc_row(doc_id, erp_system="SAP"))
         row = _fetch_live_document(doc_id)
-        assert row["custom_field_1"] == "cf1-value"
+        assert row["erp_system"] == "SAP"
 
     def test_user_id_defaults_to_null_when_not_supplied(self, doc_id):
         upsert_live_document(_doc_row(doc_id))
