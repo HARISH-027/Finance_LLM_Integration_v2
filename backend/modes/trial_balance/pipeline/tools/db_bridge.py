@@ -238,6 +238,7 @@ def _ingest_one_parsed_document(
         "artifacts": [str(out_path)],
         "tb_doc_id": tb_doc_id,
         "financial_year": metadata.financial_year,
+        "statement_type": metadata.statement_type,
         "intake_warnings": (intake_warnings or []) + [
             {"code": "QUALITY_GATE", "severity": "WARNING", "message": w} for w in result.quality_gate_report.warnings
         ],
@@ -268,6 +269,12 @@ def _ingest_one_parsed_document(
     }
 
 
+def _normalize_statement_type(value):
+    """SFS/CFS (or their long forms) -> the stored 'Standalone'/'Consolidated'; anything else -> None (keep the file's own)."""
+    key = (value or "").strip().lower()
+    return {"sfs": "Standalone", "standalone": "Standalone", "cfs": "Consolidated", "consolidated": "Consolidated"}.get(key)
+
+
 @pipeline_tool("ingest_tb_to_live", domain="db_bridge")
 def ingest_tb_to_live(
     tb_grouping_template_path: str,
@@ -282,6 +289,7 @@ def ingest_tb_to_live(
     persist_to_live: bool = True,
     user_id: str = None,
     erp_type: str = None,
+    statement_type: str = None,
 ) -> dict:
     """Ingest one or two client-submitted TB workbook(s) into LIVE staging
     (live_document_table/live_tb_table) and produce canonical_tb.parquet
@@ -412,9 +420,13 @@ def ingest_tb_to_live(
     # forced onto several distinct fiscal-year documents detected from one file
     # (Scenario D) -- only applied for the ordinary one-document case. Accounting
     # standard has no such restriction (passed to parse_tb_input above, uniformly).
+    # statement_type (SFS/CFS) is a property of the whole upload, so unlike the
+    # per-year fields above it applies to every document of a multi-year file too.
+    statement_type_value = _normalize_statement_type(statement_type)
     metadata_overrides = (
-        {"company_name": company_name, "cin": cin, "financial_year": financial_year}
-        if not multi_year else None
+        {"company_name": company_name, "cin": cin, "financial_year": financial_year,
+         "statement_type": statement_type_value}
+        if not multi_year else {"statement_type": statement_type_value}
     )
 
     # Ingestion error catalog Sections 3/4 (sheet/header/formula-error

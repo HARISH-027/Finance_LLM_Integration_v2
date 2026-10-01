@@ -6,6 +6,12 @@ const STANDARD_OPTIONS = [
   { value: 'IND_AS', label: 'IND AS' },
 ];
 
+const STATEMENT_OPTIONS = [
+  { value: '', label: 'Auto-detect' },
+  { value: 'SFS', label: 'SFS (Standalone)' },
+  { value: 'CFS', label: 'CFS (Consolidated)' },
+];
+
 const ERP_OPTIONS = [
   { value: '', label: 'Auto-detect' },
   { value: 'tally', label: 'Tally' },
@@ -105,6 +111,17 @@ export default function CompanyDetailsFields({ slot, value, onChange, companies 
             onChange={(e) => set('standard', e.target.value)}
           >
             {STANDARD_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+
+        <label className="tbcompanyfields__field">
+          <span>Statement basis</span>
+          <select
+            className="tbpick__select"
+            value={v.statementType || ''}
+            onChange={(e) => set('statementType', e.target.value)}
+          >
+            {STATEMENT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </label>
 

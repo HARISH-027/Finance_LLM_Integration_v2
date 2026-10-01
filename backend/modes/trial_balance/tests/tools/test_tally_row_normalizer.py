@@ -61,3 +61,11 @@ class TestNormalizeTallyRows:
         result = normalize_tally_rows(_KTPO, name, header_row, cols, rows)
         assert len(result.container_rows) == 42 and len(result.ledger_rows) == 202
         assert abs(sum(r.closing for r in result.ledger_rows)) < 0.01
+
+
+class TestStatementTypeNormalization:
+    def test_sfs_cfs_and_long_forms(self):
+        from modes.trial_balance.pipeline.tools.db_bridge import _normalize_statement_type as n
+        assert n("SFS") == "Standalone" and n(" standalone ") == "Standalone"
+        assert n("cfs") == "Consolidated" and n("Consolidated") == "Consolidated"
+        assert n("") is None and n(None) is None and n("junk") is None

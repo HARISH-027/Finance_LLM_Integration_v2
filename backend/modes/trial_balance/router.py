@@ -142,6 +142,9 @@ class UploadMappedRequest(BaseModel):
     # ERP's adapter (e.g. Tally: Dr/Cr re-signing, Group/Ledger split,
     # main_head-only classification).
     erp_type: Optional[str] = None
+    # "SFS" (standalone) or "CFS" (consolidated); blank keeps whatever the file
+    # itself declares (STATEMENT_TYPE) or leaves it unset.
+    statement_type: Optional[str] = None
     # False for the query-analysis staging flow (TbRunPicker's 'query' mode) --
     # runs the identical classify/quality-gate chain and still writes
     # canonical_tb.parquet, but never writes to LIVE. True (default) is the
@@ -313,6 +316,7 @@ def upload_mapped(request: UploadMappedRequest, user: CurrentUser = Depends(requ
             financial_year=request.financial_year,
             standard=request.standard,
             erp_type=request.erp_type or None,
+            statement_type=request.statement_type or None,
             persist_to_live=request.persist_to_live,
             user_id=user.user_id,
         )
