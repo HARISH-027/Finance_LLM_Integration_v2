@@ -305,12 +305,12 @@ def _upsert_live_document_exec(cur, doc: dict) -> None:
             (entity_id, entity_name, cin, company_name, fy_period_start, fy_period_end,
              tb_doc_id, tb_doc_name, statement_type, financial_year, has_grouping,
              grouping_doc_id, grouping_doc_name, document_version, modification_dump,
-             custom_field_1, custom_field_2, custom_field_3, user_id)
+             erp_system, currency, custom_field_3, user_id)
         VALUES (%(entity_id)s, %(entity_name)s, %(cin)s, %(company_name)s,
                 %(fy_period_start)s, %(fy_period_end)s, %(tb_doc_id)s, %(tb_doc_name)s,
                 %(statement_type)s, %(financial_year)s, %(has_grouping)s,
                 %(grouping_doc_id)s, %(grouping_doc_name)s, %(document_version)s,
-                %(modification_dump)s, %(custom_field_1)s, %(custom_field_2)s, %(custom_field_3)s,
+                %(modification_dump)s, %(erp_system)s, %(currency)s, %(custom_field_3)s,
                 %(user_id)s)
         """,
         doc,
@@ -325,9 +325,9 @@ def _fill_document_optional_columns(doc: dict) -> dict:
 
 def upsert_live_document(doc: dict) -> str:
     """Delete-then-insert by tb_doc_id (no unique constraint exists to ON CONFLICT against).
-    custom_field_1/2/3 are reserved/not-yet-defined -- passed through as
-    optional/nullable (doc.get, not doc[...]) so callers never have to supply
-    them."""
+    erp_system/currency/custom_field_3 are optional document-level fields --
+    passed through as optional/nullable (doc.get, not doc[...]) so callers
+    never have to supply them."""
     doc = _fill_document_optional_columns(doc)
     with db_cursor(dict_rows=False) as cur:
         _upsert_live_document_exec(cur, doc)

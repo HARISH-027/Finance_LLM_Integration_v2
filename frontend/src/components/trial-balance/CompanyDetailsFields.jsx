@@ -6,6 +6,19 @@ const STANDARD_OPTIONS = [
   { value: 'IND_AS', label: 'IND AS' },
 ];
 
+const STATEMENT_OPTIONS = [
+  { value: '', label: 'Auto-detect' },
+  { value: 'SFS', label: 'SFS (Standalone)' },
+  { value: 'CFS', label: 'CFS (Consolidated)' },
+];
+
+const ERP_OPTIONS = [
+  { value: '', label: 'Auto-detect' },
+  { value: 'tally', label: 'Tally' },
+  { value: 'sap', label: 'SAP' },
+  { value: 'oracle', label: 'Oracle' },
+];
+
 /**
  * Optional Company Details block, rendered below the upload control on the
  * "Upload new" tab only (single mode's slot, and each of comparison mode's
@@ -98,6 +111,28 @@ export default function CompanyDetailsFields({ slot, value, onChange, companies 
             onChange={(e) => set('standard', e.target.value)}
           >
             {STANDARD_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+
+        <label className="tbcompanyfields__field">
+          <span>Statement basis</span>
+          <select
+            className="tbpick__select"
+            value={v.statementType || ''}
+            onChange={(e) => set('statementType', e.target.value)}
+          >
+            {STATEMENT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+
+        <label className="tbcompanyfields__field">
+          <span>Source ERP</span>
+          <select
+            className="tbpick__select"
+            value={v.erpType || ''}
+            onChange={(e) => set('erpType', e.target.value)}
+          >
+            {ERP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </label>
       </div>

@@ -22,8 +22,19 @@
     "unbilled revenue",
     "post-retirement",
     "post retirement medical",
+    "post ret med",
     "gratuity",
-    "provision for doubtful"
+    "provision for doubtful",
+    "prov doubt",
+    "doubt debt",
+    "leave encashment",
+    "leave enc",
+    "provision for leave",
+    "contingency",
+    "recoverable",
+    "withheld",
+    "withholding",
+    "provision for"
   ],
   "foreign_currency": [
     "forex",

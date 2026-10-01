@@ -3345,6 +3345,43 @@ def build_risk_indicators(canonical_tb_file: str, materiality_file: str = None, 
 
     _apply_relationship_risks()
 
+    PROVISION_MOVEMENT_PCT_THRESHOLD = 100.0
+
+    def _apply_provision_movement_risks():
+        # Client-review defect registry: a provision/estimate account that jumps by a large
+        # percentage (e.g. a doubtful-debt provision up 7.8x) is invisible to
+        # build_variance_analysis's Extreme classification, because that check AND-gates the
+        # percentage test behind abs_movement >= performance_materiality (see variance.py) --
+        # a small-balance provision growing several-fold never clears that absolute floor. It
+        # is equally invisible to build_estimation_exposure, which is deliberately ranked by
+        # closing-balance SIZE only and explicitly indifferent to movement (see
+        # estimation_keywords.json's amend_policy). This screen is the narrow, keyword-scoped
+        # complement to both: reuses the same estimation-risk keyword vocabulary so it can
+        # never disagree with build_estimation_exposure about what counts as an estimate/
+        # provision-type account, and flags a movement pattern (large %% swing, or exactly
+        # zero movement on a non-nil balance -- a stale/unchanged provision) without being
+        # gated on absolute materiality, since these accounts are audit-relevant by NATURE
+        # regardless of size (same rationale as the sensitive-account tags).
+        for row in rows:
+            gl_name = row.get("gl_name")
+            if not is_estimation_risk_account(gl_name):
+                continue
+            acct_str = f"{row.get('gl_code', '')} - {row.get('gl_name', '')}"
+            ob = float(row.get("opening_balance") or 0.0)
+            cb = float(row.get("closing_balance") or 0.0)
+            mov = cb - ob
+            if cb == 0.0 and ob == 0.0:
+                continue
+            if ob != 0.0:
+                pct = (mov / abs(ob)) * 100
+                if abs(pct) > PROVISION_MOVEMENT_PCT_THRESHOLD:
+                    add_risk(acct_str, "PROVISION_MOVEMENT_ANOMALY", "EstimationRisk")
+                    continue
+            if mov == 0.0 and cb != 0.0:
+                add_risk(acct_str, "PROVISION_MOVEMENT_ANOMALY", "EstimationRisk")
+
+    _apply_provision_movement_risks()
+
     # Read by sections 5, 6 and 7 below (planning focus, fraud indicators, output).
     critical_risks = []
     high_risks = []
@@ -3671,6 +3708,7 @@ def build_sensitive_detector(canonical_tb_file: str, output_dir: str = None) -> 
         "msme_testing": [x["account"] for x in sensitive_accounts if x["category"] == "msme" and x["priority"] in ["Critical", "High"]][:10],
         "csr_testing": [x["account"] for x in sensitive_accounts if x["category"] == "csr" and x["priority"] in ["Critical", "High"]][:10],
         "statutory_testing": [x["account"] for x in sensitive_accounts if x["category"] == "statutory_dues" and x["priority"] in ["Critical", "High"]][:10],
+        "advance_testing": [x["account"] for x in sensitive_accounts if x["category"] == "advance" and x["priority"] in ["Critical", "High"]][:10],
     }
 
     coverage = {

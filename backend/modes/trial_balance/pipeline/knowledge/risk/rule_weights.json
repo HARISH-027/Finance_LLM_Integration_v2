@@ -9,6 +9,7 @@
     ],
     "extraction_note": "Weights generated from the Python literal by AST read. The two mapping-confidence thresholds were previously defined only inside build_data_sufficiency_grade; build_risk_indicators had no equivalent and reported a hardcoded 'Unknown'. Both tools now read these, so they cannot drift.",
     "amend_policy": "A score is the SUM of every triggered rule's weight, capped at 100. Bands: >75 Critical, >=50 High, >=25 Medium, else Low. Raising one weight shifts the whole population across bands -- change deliberately, and re-run the acceptance set afterwards.",
+    "provision_movement_anomaly_weight_note": "80, not ~15-25 like every other rule here, is deliberate: build_exception_consolidator's _process_risk_indicator_exceptions only reads risk_indicators.json's critical_risks list (score >75) -- high_risks/medium_risks are computed but never promoted into a finding. Verified against a real EPIL re-run: the flagship missed-risk example (a doubtful-debt provision, opening->closing -681.7%) scored only 20 (Low band) at weight 20 and never surfaced as a finding, reproducing the exact invisibility the client review flagged. This rule's own design intent (see risk.py's _apply_provision_movement_risks docstring) is 'audit-relevant by nature regardless of size' -- the same rationale SUSPENSE_CLEARING/INTERCOMPANY use at their current low weights, which this change does NOT touch or claim to fix; broadening critical_risks-only promotion to include high/medium risk accounts would fix this more generally but is a shared-function change affecting every rule here, out of scope for this fix.",
     "score_bands": {
       "critical": "> 75",
       "high": ">= 50",
@@ -26,7 +27,8 @@
     "ORPHAN_NODE": 15,
     "SUSPENSE_CLEARING": 20,
     "INTERCOMPANY": 15,
-    "SIGN_ANOMALY": 20
+    "SIGN_ANOMALY": 20,
+    "PROVISION_MOVEMENT_ANOMALY": 80
   },
   "mapping_confidence_thresholds": {
     "high_pct": 80.0,

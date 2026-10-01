@@ -15,7 +15,7 @@ _TEST_DOC_ID = "PYTEST_LOAD_TB_FROM_DB_DOC"
 def seeded_main_document(db_available):
     """Seeds one document_table row + two tb_table rows directly via SQL
     (test-only setup -- the application code itself never writes to MAIN),
-    with custom_field_1 populated, then cleans up afterwards."""
+    with the line-level custom_field_1 populated, then cleans up afterwards."""
     if not db_available:
         pytest.skip("No reachable Postgres DB (settings.DB_*) -- skipping.")
 
@@ -24,9 +24,9 @@ def seeded_main_document(db_available):
     with db_cursor(dict_rows=False) as cur:
         cur.execute(
             """INSERT INTO document_table
-               (entity_id, entity_name, tb_doc_id, tb_doc_name, financial_year, custom_field_1)
+               (entity_id, entity_name, tb_doc_id, tb_doc_name, financial_year, erp_system)
                VALUES (%s, %s, %s, %s, %s, %s)""",
-            ("PYTEST_ENTITY", "Pytest Entity", _TEST_DOC_ID, "Pytest TB", "FY2025-26", "main-custom-1"),
+            ("PYTEST_ENTITY", "Pytest Entity", _TEST_DOC_ID, "Pytest TB", "FY2025-26", "SAP"),
         )
         cur.execute(
             """INSERT INTO tb_table

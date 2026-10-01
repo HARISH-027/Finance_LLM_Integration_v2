@@ -5,13 +5,31 @@ write into live_document_table/live_tb_table. Gated on `db_available`,
 same as every other LIVE-staging test in this package.
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 import openpyxl
 import pytest
 
-from modes.trial_balance.pipeline.db import fetch_live_document
+from modes.trial_balance.pipeline.db import db_cursor, fetch_live_document
 from modes.trial_balance.pipeline.tools import delete_db_document, ingest_tb_to_live
+from modes.trial_balance.pipeline.tools.erp_persistence import fetch_tb_erp_classification, fetch_tb_scope
+
+_GURUGRAM_DIR = (
+    Path(__file__).parents[3] / "documentation" / "ERP_system_standardized_files" / "Tally"
+    / "Gurugram_Metro_Rail_Limited"
+)
+_GURUGRAM_TB = _GURUGRAM_DIR / "Gurugram_Metro_Rail_Limited_Master_Trial_Balance_Head_Sub_CAG__TB25-26__be041db1.xlsx"
+_GURUGRAM_GROUPING = _GURUGRAM_DIR / "Gurugram_Metro_Rail_Limited_Master_Trial_Balance_Head_Sub_CAG__Grouping__5e8045cb.xlsx"
+
+_BHAVINI_DIR = (
+    Path(__file__).parents[3] / "documentation" / "ERP_system_standardized_files" / "Oracle"
+    / "Bhavini" / "Multi_FY_2024-25_to_2025-26"
+)
+_BHAVINI_TB = _BHAVINI_DIR / "Bhavini_Multi_FY_2024-25_to_2025-26_Trial_Balance_and_GL_Grouping__TB_24-25__e2452013.xlsx"
+_BHAVINI_GROUPING = (
+    _BHAVINI_DIR / "Bhavini_Multi_FY_2024-25_to_2025-26_Trial_Balance_and_GL_Grouping__Grouping_24-25__6aa740fb.xlsx"
+)
 
 
 class _FakeResponse:
@@ -206,3 +224,91 @@ def test_grand_total_row_never_reaches_canonical_tb(db_available, tmp_path):
         assert out_df.to_dicts()[0]["gl_code"] == "E2E-1001"
     finally:
         delete_db_document(tb_doc_id=result["tb_doc_id"])
+
+
+@pytest.mark.skipif(not _GURUGRAM_TB.exists() or not _GURUGRAM_GROUPING.exists(), reason="Gurugram real-file fixtures not present")
+def test_erp_type_tally_wiring_persists_scope_and_classification(db_available, tmp_path):
+    """TB Multi-ERP Adaptability upgrade, wired end-to-end: real Gurugram
+    Tally pair -> ingest_tb_to_live(erp_type="tally") -> LIVE write ->
+    tb_scope/tb_erp_classification actually persisted and readable back.
+    The real proof this wiring works, not just that the pieces compose in
+    isolation (already covered by test_erp_adapter_integration.py)."""
+    if not db_available:
+        pytest.skip("No reachable Postgres DB (settings.DB_*) -- skipping.")
+
+    with patch("modes.trial_balance.pipeline.agent.get_agent", return_value=_FakeAgent()):
+        result = ingest_tb_to_live(
+            tb_grouping_template_path=str(_GURUGRAM_TB),
+            grouping_file_path=str(_GURUGRAM_GROUPING),
+            output_dir=str(tmp_path / "out"),
+            standard="IND_AS",
+            erp_type="tally",
+            accept_data_quality_risk=True,
+        )
+
+    try:
+        assert result["execution_status"] == "SUCCESS", result
+        assert result["erp_type"] == "tally"
+        # Real Phase 3 finding: this file genuinely has no Opening Balance column.
+        assert any(f["code"] == "tally_missing_opening_or_movement_columns" for f in result["erp_findings"])
+
+        tb_doc_id = result["tb_doc_id"]
+        scope = fetch_tb_scope(tb_doc_id)
+        assert scope is not None
+
+        classification = fetch_tb_erp_classification(tb_doc_id)
+        assert len(classification) > 0
+        any_has_sub_head_1 = any(
+            evidence.account_classification.get("sub_head_1") for evidence in classification.values()
+        )
+        assert any_has_sub_head_1
+    finally:
+        delete_db_document(tb_doc_id=result["tb_doc_id"])
+        with db_cursor(dict_rows=False) as cur:
+            cur.execute("DELETE FROM tb_scope WHERE tb_doc_id = %s", (result["tb_doc_id"],))
+            cur.execute("DELETE FROM tb_erp_classification WHERE tb_doc_id = %s", (result["tb_doc_id"],))
+
+
+@pytest.mark.skipif(not _BHAVINI_TB.exists() or not _BHAVINI_GROUPING.exists(), reason="Bhavini real-file fixtures not present")
+def test_erp_type_oracle_wiring_persists_scope_and_classification(db_available, tmp_path):
+    """Phase 4 (Oracle adapter), wired end-to-end: real Bhavini pair ->
+    ingest_tb_to_live(erp_type="oracle") -> LIVE write -> tb_scope/
+    tb_erp_classification actually persisted and readable back. Bhavini's
+    classification comes entirely from its separate Grouping file (Oracle's
+    TB sheet never carries it row-embedded, unlike Tally/SAP)."""
+    if not db_available:
+        pytest.skip("No reachable Postgres DB (settings.DB_*) -- skipping.")
+
+    with patch("modes.trial_balance.pipeline.agent.get_agent", return_value=_FakeAgent()):
+        result = ingest_tb_to_live(
+            tb_grouping_template_path=str(_BHAVINI_TB),
+            grouping_file_path=str(_BHAVINI_GROUPING),
+            output_dir=str(tmp_path / "out"),
+            standard="IND_AS",
+            erp_type="oracle",
+            accept_data_quality_risk=True,
+        )
+
+    try:
+        assert result["execution_status"] == "SUCCESS", result
+        assert result["erp_type"] == "oracle"
+        # Real, verified-against-raw-cells finding: this file's grand total
+        # genuinely doesn't balance (257/628 rows don't satisfy
+        # opening+debit-credit=closing even in the raw file).
+        assert any(f["code"] == "grand_total_imbalance" for f in result["erp_findings"])
+
+        tb_doc_id = result["tb_doc_id"]
+        scope = fetch_tb_scope(tb_doc_id)
+        assert scope is not None
+
+        classification = fetch_tb_erp_classification(tb_doc_id)
+        assert len(classification) > 0
+        any_has_main_head = any(
+            evidence.account_classification.get("main_head") for evidence in classification.values()
+        )
+        assert any_has_main_head
+    finally:
+        delete_db_document(tb_doc_id=result["tb_doc_id"])
+        with db_cursor(dict_rows=False) as cur:
+            cur.execute("DELETE FROM tb_scope WHERE tb_doc_id = %s", (result["tb_doc_id"],))
+            cur.execute("DELETE FROM tb_erp_classification WHERE tb_doc_id = %s", (result["tb_doc_id"],))

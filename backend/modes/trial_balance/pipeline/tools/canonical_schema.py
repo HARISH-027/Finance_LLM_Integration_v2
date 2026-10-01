@@ -30,7 +30,7 @@ CANONICAL_TB_OPTIONAL_COLUMNS = ["custom_field_1", "custom_field_2", "custom_fie
 
 CANONICAL_TB_ALL_COLUMNS = CANONICAL_TB_COLUMNS + CANONICAL_TB_OPTIONAL_COLUMNS
 
-DOCUMENT_OPTIONAL_COLUMNS = ["custom_field_1", "custom_field_2", "custom_field_3", "user_id"]
+DOCUMENT_OPTIONAL_COLUMNS = ["erp_system", "currency", "custom_field_3", "user_id"]
 
 CANONICAL_TB_NUMERIC_COLUMNS = ["opening_balance", "debit", "credit", "closing_balance"]
 

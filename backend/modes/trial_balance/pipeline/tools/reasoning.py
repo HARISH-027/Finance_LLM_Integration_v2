@@ -15,23 +15,61 @@ from modes.trial_balance.pipeline.tools.pipeline_tool import *  # noqa: F401,F40
 
 _GENERIC_EVIDENCE = {"Ledgers", "Contracts/Agreements", "Reconciliations", "Mapping Review"}
 
-def match_area(text: str, areas: dict) -> tuple:
+def match_area(text: str, areas: dict, account_type: str = None) -> tuple:
     """Match an account's text against the catalogue's account areas.
 
     Longest keyword wins rather than first-match: "trade receivable" must beat a bare
     "receivable" when both are present, otherwise a specific area loses to a generic
     one purely because of dict ordering.
+
+    Client-review defect registry: a flat keyword match with no structural check let a
+    Liability-typed account (e.g. "Retention Money Payable") match an Asset-only area
+    ("loans_advances_deposits" via the bare "retention money" keyword) purely because
+    the FSLI/gl_name text happened to contain a matching phrase, even though the
+    account's own already-correct FSLI classification (account_type, populated
+    upstream from the canonical TB) made that area structurally impossible. Two
+    independent, opt-in mechanisms fix this without touching any area that doesn't
+    declare them (so every area's existing behaviour is unchanged unless it opts in):
+
+    - An area may declare `"exclude": [...]` keywords -- if any is present, that area
+      is never a candidate for this account, regardless of how well `"match"` scores
+      (e.g. "revenue" excludes "loss on sale" so a disposal loss doesn't inherit
+      revenue-recognition assertions just because Schedule III nets it under "Other
+      Income").
+    - An area may declare `"account_types": [...]` -- when the caller passes the
+      account's actual type, the best keyword match from a type-COMPATIBLE area wins
+      over a longer match from an incompatible one. If no type-compatible candidate
+      exists, this falls back to the plain longest-match (unchanged prior behaviour)
+      rather than forcing a match to unclassified -- sec 1.2 forbids inventing a
+      classification, but an imperfect area is still better than no evidence when
+      nothing better is available.
     """
-    haystack = (text or "").lower()
-    best_name, best_spec, best_len = None, None, 0
+    haystack = f" {(text or '').lower()} "
+    candidates = []
     for name, spec in areas.items():
         if name == "unclassified":
             continue
+        if any(kw in haystack for kw in spec.get("exclude", [])):
+            continue
+        best_kw_len = 0
         for kw in spec.get("match", []):
-            if kw in haystack and len(kw) > best_len:
-                best_name, best_spec, best_len = name, spec, len(kw)
-    if best_spec is None:
+            if kw in haystack and len(kw) > best_kw_len:
+                best_kw_len = len(kw)
+        if best_kw_len:
+            candidates.append((name, spec, best_kw_len))
+
+    if not candidates:
         return "unclassified", areas["unclassified"]
+
+    candidates.sort(key=lambda c: c[2], reverse=True)
+
+    if account_type:
+        for name, spec, _kw_len in candidates:
+            allowed_types = spec.get("account_types")
+            if not allowed_types or account_type in allowed_types:
+                return name, spec
+
+    best_name, best_spec, _ = candidates[0]
     return best_name, best_spec
 
 @pipeline_tool("build_assertion_evidence_map", domain="reasoning")
@@ -92,7 +130,7 @@ def build_assertion_evidence_map(
             hierarchy.get("group"), business.get("fsli"),
         ) if v)
 
-        area_name, area = match_area(text, areas)
+        area_name, area = match_area(text, areas, account_type=business.get("account_type"))
         area_counts[area_name] = area_counts.get(area_name, 0) + 1
 
         assertions = list(area.get("assertions", []))
