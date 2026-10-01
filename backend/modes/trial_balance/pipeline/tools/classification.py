@@ -165,7 +165,20 @@ def _get_candidates_or_none(
 
     Returns (candidates_or_none, confidence_by_gl). candidates is None
     when the union is too few to trust, so callers fall back to the
-    unmodified full tree."""
+    unmodified full tree.
+
+    FULL-TREE FALLBACK DISABLED FOR NOW (explicit instruction: "comment it
+    out entirely for now, map it for future look case to work when
+    required the full-tree fallback, always use candidates for now"). The
+    MIN_CANDIDATES_FOR_NARROWING threshold check below is commented out,
+    not deleted -- always uses whatever candidates were retrieved, even
+    below that threshold. To re-enable the safety net, uncomment the two
+    lines in the block below. Known side effect of disabling it: in the
+    (rare) case where retrieval finds literally ZERO candidates for every
+    row in a batch (embedding client down AND no keyword matches AND no
+    matching generic bucket), this still returns an empty list rather than
+    None -- callers will show the LLM an empty shortlist for that batch,
+    not the full tree."""
     scored_nodes: dict = {}
     known_main_heads: set = set()
     known_bs_pls: set = set()
@@ -193,8 +206,10 @@ def _get_candidates_or_none(
             identity = _identity(node)
             scored_nodes.setdefault(identity, (node, INJECTED_GENERIC_SCORE))
 
-    if len(scored_nodes) < MIN_CANDIDATES_FOR_NARROWING:
-        return None, confidence_by_gl
+    # Disabled for now -- see docstring above. Uncomment to restore the
+    # full-tree fallback for a too-thin candidate shortlist:
+    # if len(scored_nodes) < MIN_CANDIDATES_FOR_NARROWING:
+    #     return None, confidence_by_gl
     return (
         rank_and_cap_candidates(scored_nodes, known_main_heads=frozenset(known_main_heads), known_bs_pls=frozenset(known_bs_pls)),
         confidence_by_gl,

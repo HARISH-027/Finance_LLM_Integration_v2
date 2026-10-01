@@ -30,6 +30,7 @@ ResolvedAtStep = Literal[
     "step3_single_shot",  # single-shot LLM batch classification
     "step3_staged",       # 3-stage ambiguous-vocabulary narrowing
     "repair",             # resolved only after the Validation Gate demoted and repaired it
+    "tally_main_head",    # Tally: settled at main_head depth by design -- no sub_head_1/2 exists in source
     "no_grouping_match",  # GL code not found in grouping data at all -- terminal UNMAPPED
     "unresolved",         # grouping data existed but never resolved -- terminal UNMATCHED
 ]
@@ -73,8 +74,14 @@ class GroupingHint:
 @dataclass(frozen=True)
 class TaxonomyResolution:
     """The outcome of resolving one GL row's grouping evidence against the
-    controlled taxonomy via taxonomy_resolver.py -- consumed only for the
-    audit trail, never persisted as a DB column."""
+    controlled taxonomy via taxonomy_resolver.py -- an in-memory audit-trail
+    value, never a column on the Canonical TB row itself (see canonical_schema.
+    py's CANONICAL_TB_COLUMNS, which stays untouched by this). Its own open
+    decision (design doc section 35) has been made: threaded onto RowTrace by
+    resolution_metadata.py, then persisted to its own tb_taxonomy_resolution
+    table (taxonomy_resolution_persistence.py, migration 0005) -- not
+    reintroduced as a canonical row column, which would ripple into every
+    consumer that selects CANONICAL_TB_COLUMNS."""
 
     status: Literal["RESOLVED", "UNRESOLVED"]
     method: ResolutionMethod

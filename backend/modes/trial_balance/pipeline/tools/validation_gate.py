@@ -191,4 +191,41 @@ def run_validation_gate(
     return resolved
 
 
-__all__ = ["run_validation_gate"]
+_MAIN_HEAD_ONLY_ACCOUNT_TYPES = {
+    "BS": {"Asset", "Liability", "Equity", "unclassified"},
+    "PL": {"Income", "Expense"},
+}
+
+
+def build_main_head_only_row(
+    tb_row, *, bs_pl, main_head, account_type, resolution_method: str, evidence: str, confidence=None,
+):
+    """Validation Gate for ERPs whose source supplies a group hierarchy but
+    NO sub_head_1/sub_head_2 (Tally). Returns MAPPED with sub_head_1/2 left
+    None -- deliberately not a full taxonomy leaf -- only when bs_pl,
+    main_head and account_type are present and mutually consistent;
+    otherwise UNMATCHED. Like run_validation_gate, this is the only place
+    such a MAPPED row can be constructed, and account_type is validated
+    here, never trusted from a caller unchecked."""
+    valid = (
+        bool(main_head and str(main_head).strip())
+        and bs_pl in _MAIN_HEAD_ONLY_ACCOUNT_TYPES
+        and account_type in _MAIN_HEAD_ONLY_ACCOUNT_TYPES[bs_pl]
+    )
+    if not valid:
+        return NormalizedRow.from_tb_row(
+            tb_row, bs_pl=None, main_head=None, sub_head_1=None, sub_head_2=None, account_type=None,
+            mapped_status=UNMATCHED, trace=RowTrace(resolved_at_step="unresolved", evidence=evidence),
+        )
+    return NormalizedRow.from_tb_row(
+        tb_row, bs_pl=bs_pl, main_head=main_head, sub_head_1=None, sub_head_2=None, account_type=account_type,
+        mapped_status=MAPPED,
+        trace=RowTrace(
+            resolved_at_step="tally_main_head", resolution_method=resolution_method, evidence=evidence,
+            confidence=confidence,
+        ),
+        canonical_bs_pl=bs_pl, canonical_main_head=main_head, wording_source="client_original",
+    )
+
+
+__all__ = ["run_validation_gate", "build_main_head_only_row"]

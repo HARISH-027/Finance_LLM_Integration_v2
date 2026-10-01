@@ -172,51 +172,175 @@ def header_confidence(grid: list, header_row: int, cols: dict) -> float:
     return lexical_score + numeric_signal + identifier_signal
 
 
+def _row_alias_cols(row: list) -> dict:
+    """One row's own {canonical_field: column_index} from direct alias
+    matches -- the same per-row scan locate_header's main loop runs,
+    factored out so _recover_gl_name_from_earlier_row can reuse it
+    identically rather than duplicating the alias-matching rules."""
+    cols: dict = {}
+    for c, cell in enumerate(row):
+        norm = _norm(cell)
+        if not norm:
+            continue
+        is_alias = norm in _ALL_ALIASES or any(norm.startswith(f) for f in _PREFIX_FIELDS)
+        if not is_alias:
+            continue
+        for field in FIELD_ALIASES:
+            if field not in cols and _matches(norm, field):
+                cols[field] = c
+    return cols
+
+
+# Tally's native export (movement columns switched on) prints a 3-row
+# header: a "Particulars" row, then an "Opening"/"Transactions"/"Closing"
+# parent row, then a "Balance"/"Debit"/"Credit"/"Balance" sub-row directly
+# beneath it. header_confidence() correctly scores the Debit/Credit row
+# highest (it alone carries 2+ amount aliases plus real numeric data
+# below), which is the right header_row for locating amounts -- but that
+# row has no gl_name column of its own, and gl_name ("Particulars") sits
+# up to 2 rows ABOVE it, never merged in by the single-row scan. Confirmed
+# against real client files (Mumbai Aviation Fuel Farm, Petronet VK): both
+# are rejected by qualifies_as_tb_sheet() without this recovery step, since
+# "gl_name" never enters `cols` at all.
+_GL_NAME_LOOKBACK_ROWS = 3
+
+
+def _recover_gl_name_from_earlier_row(grid: list, header_row: int, cols: dict) -> dict:
+    """If the winning header_row has no gl_name column, scans up to
+    _GL_NAME_LOOKBACK_ROWS rows immediately above it for one (Tally's 3-row
+    split header convention) and merges just that one field in. Never
+    overwrites anything header_row already found itself, and never touches
+    any other field -- a conservative, narrowly-scoped recovery, not a
+    general multi-row header merge."""
+    if "gl_name" in cols:
+        return cols
+    for back in range(1, _GL_NAME_LOOKBACK_ROWS + 1):
+        r = header_row - back
+        if r < 0:
+            break
+        earlier_cols = _row_alias_cols(grid[r])
+        if "gl_name" in earlier_cols:
+            merged = dict(cols)
+            merged["gl_name"] = earlier_cols["gl_name"]
+            return merged
+    return cols
+
+
+def _recover_two_row_amount_labels(grid: list, header_row: int, cols: dict) -> dict:
+    """Tally's 3-row header (see _recover_gl_name_from_earlier_row) also
+    splits a compound label like "Opening Balance"/"Closing Balance"
+    across two physical rows: the qualifier word ("Opening"/"Closing") one
+    row above header_row, the shared "Balance" word directly on
+    header_row itself -- a single dedicated column per field, NOT the
+    genuine split debit-side/credit-side accumulator pair
+    _find_subrow_split_columns handles (that's a different real SAP/Tally
+    pattern needing subtraction; this one needs no arithmetic at all, just
+    recognizing that its two-word alias is spelled across two rows).
+    Combines each column's header_row text with the row above it and
+    re-tests against the existing FIELD_ALIASES table -- never invents a
+    new alias, just lets one that's already a literal alias ("opening
+    balance", "closing balance") still match when split across rows."""
+    if header_row < 1:
+        return cols
+    parent_row = grid[header_row - 1]
+    child_row = grid[header_row]
+    merged = dict(cols)
+    width = max(len(parent_row), len(child_row))
+    for c in range(width):
+        parent_text = _norm(parent_row[c]) if c < len(parent_row) else ""
+        child_text = _norm(child_row[c]) if c < len(child_row) else ""
+        if not parent_text or not child_text:
+            continue
+        combined = f"{parent_text} {child_text}"
+        for field in ("opening", "closing"):
+            if field not in merged and _matches(combined, field):
+                merged[field] = c
+    return merged
+
+
 def locate_header(grid: list, max_scan: int = 15) -> tuple:
     """Scan the first `max_scan` rows of a raw grid for the row that best
     matches known field-name aliases, using header_confidence() to rank
     candidates. Returns (header_row_index, {canonical_field: column_index}).
     Falls back to row 0 with whatever direct alias matches exist (possibly
-    none) if nothing scores above zero."""
+    none) if nothing scores above zero. See
+    _recover_gl_name_from_earlier_row and _recover_two_row_amount_labels
+    for the 3-row-split-header exceptions to "cols comes entirely from the
+    winning row"."""
     best_row, best_score, best_cols = 0, -1.0, {}
 
     for r in range(min(max_scan, len(grid))):
-        row = grid[r]
-        cols: dict = {}
-        for c, cell in enumerate(row):
-            norm = _norm(cell)
-            if not norm:
-                continue
-            is_alias = norm in _ALL_ALIASES or any(norm.startswith(f) for f in _PREFIX_FIELDS)
-            if not is_alias:
-                continue
-            for field in FIELD_ALIASES:
-                if field not in cols and _matches(norm, field):
-                    cols[field] = c
+        cols = _row_alias_cols(grid[r])
         if not cols:
             continue
         score = header_confidence(grid, r, cols)
         if score > best_score:
             best_row, best_score, best_cols = r, score, cols
 
+    best_cols = _recover_gl_name_from_earlier_row(grid, best_row, best_cols)
+    best_cols = _recover_two_row_amount_labels(grid, best_row, best_cols)
     return best_row, best_cols
+
+
+# Tally reports a balance's side as a trailing "Dr"/"Cr" text suffix
+# rather than a minus sign (e.g. "50,00,000 Cr") -- confirmed against real
+# client exports (Indian Vaccines Corporation Limited's PDF-derived TB).
+# Mirrors the prefix/suffix-marker-strip-then-sign-apply pattern already
+# used by financial_diagnostic_report/pipeline/fs_db/md_parser.py's
+# parse_num() for a different marker vocabulary ("(-)"/"(+)") -- not reused
+# directly, since that parser's NIL/currency-symbol handling is FS-note-
+# specific, not TB-specific. Dr is the positive/asset-side convention; Cr
+# negates the magnitude.
+_DR_CR_SUFFIX_RE = re.compile(r"^(?P<number>.*?)\s*(?P<suffix>dr|cr)\.?$", re.IGNORECASE)
+
+
+def _strip_dr_cr_suffix(text: str) -> tuple[str, Optional[str]]:
+    """Returns (remaining_text, 'dr'|'cr'|None). Only strips a trailing
+    Dr/Cr token -- never touches text with no such suffix at all."""
+    match = _DR_CR_SUFFIX_RE.match(text)
+    if not match:
+        return text, None
+    return match.group("number").strip(), match.group("suffix").lower()
 
 
 def parse_amount(value) -> float:
     """Coerce a TB cell to a float. Dash/blank placeholders (a common
-    zero-balance convention in TB exports) normalize to 0.0."""
+    zero-balance convention in TB exports) normalize to 0.0. A trailing
+    Dr/Cr text suffix (see _strip_dr_cr_suffix) is recognized and applied
+    as a sign. Preserves the existing "unparseable -> 0.0" contract for
+    backward compatibility with every non-Tally call site that already
+    depends on it -- callers that need to distinguish a genuinely
+    unparseable/ambiguous cell from a real zero should use
+    parse_amount_with_status() instead."""
+    return parse_amount_with_status(value)[0]
+
+
+def parse_amount_with_status(value) -> tuple[float, bool]:
+    """(amount, parsed_cleanly). parsed_cleanly=False for a cell that
+    carries a Dr/Cr-like suffix but no recoverable numeric part (e.g. a
+    bare "Cr"), or any other cell that plain float-coercion can't make
+    sense of -- lets a caller (e.g. a Tally-specific finding) surface
+    "sign info lost" explicitly instead of the silent 0.0 parse_amount()
+    itself must still return for compatibility. A dash/blank placeholder
+    is a well-understood zero-balance convention, not ambiguous, and
+    always parses cleanly."""
     if value is None:
-        return 0.0
+        return 0.0, True
     if isinstance(value, (int, float)):
-        return float(value)
+        return float(value), True
     text = str(value).strip()
     if text.lower() in _ZERO_PLACEHOLDERS:
-        return 0.0
-    text = text.replace(",", "")
+        return 0.0, True
+
+    number_text, suffix = _strip_dr_cr_suffix(text)
+    number_text = number_text.replace(",", "")
     try:
-        return float(text)
+        amount = float(number_text)
     except ValueError:
-        return 0.0
+        return 0.0, False
+    if suffix == "cr":
+        amount = -amount
+    return amount, True
 
 
 REQUIRED_TB_FIELDS = {"gl_code", "closing"}

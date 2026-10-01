@@ -7,6 +7,7 @@ fingerprints, so only the path/filename-convention tier actually fires."""
 
 from pathlib import Path
 
+import openpyxl
 import pytest
 
 from modes.trial_balance.pipeline.tools.erp_detector import detect_erp_type
@@ -14,6 +15,11 @@ from modes.trial_balance.pipeline.tools.input_scenario_b import _load_workbook_s
 from modes.trial_balance.pipeline.tools.tb_erp_contracts import ERPType
 
 _FIXTURES_ROOT = Path(__file__).parents[2] / "documentation" / "ERP_system_standardized_files"
+
+_MUMBAI_AVIATION_TB = (
+    Path(__file__).parents[2] / "docs" / "TBS-from-ERP" / "Tally"
+    / "Mumbai Aviation Fuel Farm Facility Private Limited. Trial Balance 21 to 26.xlsx"
+)
 
 _SAP_IOC_GLOBAL_TB = (
     _FIXTURES_ROOT / "SAP" / "IOC_Global"
@@ -82,6 +88,61 @@ class TestColumnAliasTier:
         result = detect_erp_type(Path("export.xlsx"), sheets)
         assert result.erp_type == ERPType.TALLY
         assert result.confidence == 0.6
+
+
+class TestBoldGroupPatternTier:
+    """Structural fallback tier for Tally's native-export shape (no
+    gl_code, no Head/Sub-Head columns, bold top-level Group rows) --
+    needs a REAL workbook file (font info requires reopening non-read-only
+    via tally_structural_hierarchy.load_bold_aware_grid), not an in-memory
+    values-only grid like every other tier's tests above."""
+
+    def test_bold_group_pattern_detected_without_fingerprint_or_alias(self, tmp_path):
+        path = tmp_path / "native_tally_shape.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "TB"
+        ws.append(["Particulars", "Opening", "Debit", "Credit", "Closing"])
+        ws.append(["Sundry Debtors", 100.0, 60.0, 0.0, 160.0])
+        ws["A2"].font = openpyxl.styles.Font(bold=True)
+        ws.append(["ABC Traders", 40.0, 60.0, 0.0, 100.0])
+        ws.append(["XYZ Traders", 60.0, 0.0, 0.0, 60.0])
+        wb.save(path)
+
+        sheets = _load_workbook_sheets(path)
+        result = detect_erp_type(path, sheets)
+        assert result.erp_type == ERPType.TALLY
+        assert result.confidence == 0.5
+        assert result.evidence[0].startswith("structural_pattern:")
+
+    def test_no_false_positive_on_flat_ungrouped_data(self, tmp_path):
+        # No row's value reconciles against any following run -- must NOT
+        # be misdetected as Tally just because gl_code is absent.
+        path = tmp_path / "flat_no_group.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "TB"
+        ws.append(["Particulars", "Opening", "Debit", "Credit", "Closing"])
+        ws.append(["Ledger A", 10.0, 5.0, 0.0, 15.0])
+        ws.append(["Ledger B", 20.0, 0.0, 5.0, 15.0])
+        ws.append(["Ledger C", 30.0, 0.0, 0.0, 30.0])
+        wb.save(path)
+
+        sheets = _load_workbook_sheets(path)
+        result = detect_erp_type(path, sheets)
+        assert result.erp_type == ERPType.UNKNOWN
+
+
+@pytest.mark.skipif(not _MUMBAI_AVIATION_TB.exists(), reason="Mumbai Aviation Fuel Farm real fixture not present")
+def test_real_mumbai_aviation_file_detected_via_structural_pattern():
+    """Real native Tally export: no gl_code, no Head/Sub-Head columns --
+    the bold-group-pattern tier is what actually identifies it as Tally
+    from content, ahead of the weaker path-token tier."""
+    sheets = _load_workbook_sheets(_MUMBAI_AVIATION_TB, max_row=None)
+    result = detect_erp_type(_MUMBAI_AVIATION_TB, sheets)
+    assert result.erp_type == ERPType.TALLY
+    assert result.confidence == 0.5
+    assert result.evidence[0].startswith("structural_pattern:")
 
 
 class TestPathTokenTier:

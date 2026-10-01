@@ -91,6 +91,55 @@ _ALIAS_BY_ERP = {
     ERPType.TALLY: _TALLY_ALIAS_SIGNALS,
 }
 
+# Tier 2.5: Tally's native-export structural pattern (bold top-level Group
+# rows, no Head/Sub-Head columns, no gl_code -- see
+# tally_structural_hierarchy.py). Confirmed against all 37 real fixtures
+# under docs/TBS-from-ERP/Tally/ that neither tier 1 nor tier 2 above ever
+# fires on real Tally files -- this tier exists specifically to give
+# detection a real content-based signal for the majority shape, rather
+# than relying on the path/filename tier below, which also never fires on
+# any real file (none of the 18 real company folders/filenames contain
+# the word "tally"). Weaker than an explicit column alias (real Head/Sub-
+# Head columns are unambiguous), but stronger than a bare path guess (it's
+# derived from actual reconciled content, not file organization).
+_BOLD_PATTERN_MIN_RESOLUTION_RATE = 0.15
+
+
+def _has_tally_bold_group_pattern(path: Path, sheets: Dict[str, list]) -> bool:
+    """Distinct from the text-token fingerprint tier above -- needs actual
+    cell-style access (openpyxl font info), not just normalized text
+    tokens, so it re-picks the TB-qualifying sheet itself rather than
+    reusing the already-scanned `sheets` values-only grids. Runs
+    tally_structural_hierarchy's sum-reconciliation parser and treats a
+    meaningful resolution_rate as the signal -- implausible for a
+    genuinely different ERP's file (with real Head/Sub-Head columns, or
+    no row-order-only nesting at all) to coincidentally reconcile this
+    way. Skips any sheet that already has a real gl_code column (that's
+    the OTHER ERPs'/shape-b Tally's territory, not this native-no-code
+    shape). Wrapped so ANY failure (can't reopen non-read-only, no
+    gl_name/closing columns, etc.) returns False -- detect_erp_type() must
+    never fail because of this tier."""
+    try:
+        from modes.trial_balance.pipeline.tools.input_header_detect import locate_header, qualifies_as_tb_sheet
+        from modes.trial_balance.pipeline.tools.tally_structural_hierarchy import (
+            extract_tally_structural_hierarchy,
+        )
+
+        for sheet_name, grid in sheets.items():
+            if not grid:
+                continue
+            header_row, cols = locate_header(grid, max_scan=min(_MAX_SCAN_ROWS, len(grid)))
+            if not qualifies_as_tb_sheet(grid, header_row, cols):
+                continue
+            if "gl_code" in cols:
+                continue
+            result = extract_tally_structural_hierarchy(path, sheet_name, header_row, cols)
+            if result.main_head_by_row and result.resolution_rate >= _BOLD_PATTERN_MIN_RESOLUTION_RATE:
+                return True
+        return False
+    except Exception:
+        return False
+
 
 @dataclass(frozen=True)
 class ERPDetectionResult:
@@ -128,6 +177,12 @@ def detect_erp_type(
         matched = aliases & tokens
         if matched:
             return ERPDetectionResult(erp_type, 0.6, [f"column_alias: {', '.join(sorted(matched))}"])
+
+    if _has_tally_bold_group_pattern(path, sheets):
+        return ERPDetectionResult(
+            ERPType.TALLY, 0.5,
+            ["structural_pattern: bold top-level group rows reconcile via sum-matching (no gl_code, no Head/Sub-Head columns)"],
+        )
 
     path_tokens = _path_tokens(path)
     for erp_type, markers in _ERP_PATH_TOKENS.items():

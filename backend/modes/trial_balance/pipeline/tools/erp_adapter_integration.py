@@ -33,8 +33,9 @@ from modes.trial_balance.pipeline.tools.parsed_input import ParsedInput
 from modes.trial_balance.pipeline.tools.sap_adapter import run_sap_adapter
 from modes.trial_balance.pipeline.tools.scope_aware_quality_gate import run_scope_aware_quality_gate
 from modes.trial_balance.pipeline.tools.tally_adapter import run_tally_adapter
+from modes.trial_balance.pipeline.tools.tally_row_normalizer import normalize_tally_rows
 from modes.trial_balance.pipeline.tools.tb_erp_contracts import ClassificationEvidence, ERPType, ScopeMetadata
-from modes.trial_balance.pipeline.tools.tb_models import GroupingHint
+from modes.trial_balance.pipeline.tools.tb_models import GroupingHint, TBRow
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,11 @@ class ERPEnrichmentResult:
     classification_by_gl_code: Dict[str, ClassificationEvidence]
     enriched_grouping_hints: Dict[str, GroupingHint]
     findings: List[dict] = field(default_factory=list)  # [{severity, code, message}]
+    # Tally only: tb_rows re-signed (Dr +/Cr -) with Group/Head container
+    # rows separated out; None = leave parsed.tb_rows untouched.
+    normalized_tb_rows: Optional[List[TBRow]] = None
+    # Tally only: audit-trail records of the removed Group/Head rows.
+    container_rows: List[dict] = field(default_factory=list)
 
 
 def enrich_parsed_input_with_erp_adapter(
@@ -71,10 +77,19 @@ def enrich_parsed_input_with_erp_adapter(
 
         detection = detect_erp_type(tb_path, sheets, explicit_erp_type=explicit_erp_type)
 
+        working_tb_rows = parsed.tb_rows
+        normalized = None
         if detection.erp_type == ERPType.TALLY:
+            # Re-sign from Dr/Cr number formats and separate Group/Head
+            # container rows from Ledger rows BEFORE the adapter and
+            # classification see them (fail-safe: unchanged on any doubt).
+            normalized = normalize_tally_rows(tb_path, sheet_name, header_row, cols, parsed.tb_rows)
+            if normalized.applied:
+                working_tb_rows = normalized.ledger_rows
             adapter_result = run_tally_adapter(
-                tb_path, grid, header_row, cols, parsed.tb_rows,
+                tb_path, grid, header_row, cols, working_tb_rows,
                 grouping_hints=parsed.grouping_hints, metadata=parsed.metadata, sheet_name=sheet_name,
+                source_row_indices=normalized.ledger_grid_indices if normalized.applied else None,
             )
         elif detection.erp_type == ERPType.SAP:
             adapter_result = run_sap_adapter(
@@ -91,7 +106,7 @@ def enrich_parsed_input_with_erp_adapter(
 
         enriched_hints = classification_evidence_map_to_grouping_hints(adapter_result.classification_by_gl_code)
         quality_report = run_scope_aware_quality_gate(
-            parsed.tb_rows, adapter_result.scope, adapter_result.classification_by_gl_code,
+            working_tb_rows, adapter_result.scope, adapter_result.classification_by_gl_code,
         )
         findings = [
             {"severity": f.severity, "code": f.code, "message": f.message}
@@ -102,6 +117,8 @@ def enrich_parsed_input_with_erp_adapter(
             erp_type=detection.erp_type, scope=adapter_result.scope,
             classification_by_gl_code=adapter_result.classification_by_gl_code,
             enriched_grouping_hints=enriched_hints, findings=findings,
+            normalized_tb_rows=working_tb_rows if (normalized is not None and normalized.applied) else None,
+            container_rows=normalized.container_rows if normalized is not None else [],
         )
     except Exception:
         logger.warning("ERP adapter enrichment failed; proceeding without it", exc_info=True)

@@ -1,4 +1,5 @@
 import datetime
+import json
 import logging
 from dataclasses import replace
 from pathlib import Path
@@ -27,6 +28,7 @@ from modes.trial_balance.pipeline.tools.classify_document import (
 from modes.trial_balance.pipeline.tools.document_metadata import FrameworkResolution
 from modes.trial_balance.pipeline.tools.erp_adapter_integration import enrich_parsed_input_with_erp_adapter
 from modes.trial_balance.pipeline.tools.erp_persistence import upsert_tb_erp_classification, upsert_tb_scope
+from modes.trial_balance.pipeline.tools.taxonomy_resolution_persistence import upsert_tb_taxonomy_resolution
 from modes.trial_balance.pipeline.tools.input_dispatch import UnsupportedInputError, parse_tb_input
 from modes.trial_balance.pipeline.tools.input_grouping_shape import GroupingShape
 from modes.trial_balance.pipeline.tools.input_intake_checks import assess_ingestion_intake
@@ -119,6 +121,8 @@ def _ingest_one_parsed_document(
         erp_enrichment = enrich_parsed_input_with_erp_adapter(source_files, parsed, explicit_erp_type=erp_type)
         if erp_enrichment is not None:
             parsed = replace(parsed, grouping_hints=erp_enrichment.enriched_grouping_hints)
+            if erp_enrichment.normalized_tb_rows is not None:
+                parsed = replace(parsed, tb_rows=erp_enrichment.normalized_tb_rows)
 
     tb_doc_id = build_tb_doc_id(
         company_name=metadata.company_name,
@@ -132,6 +136,9 @@ def _ingest_one_parsed_document(
         result = classify_tb_document(
             parsed.tb_rows, parsed.grouping_hints, parsed.grouping_shape or GroupingShape.HIERARCHICAL_TRAIL,
             standard, llm_client, accept_data_quality_risk=accept_data_quality_risk,
+            classification_depth=(
+                "main_head" if erp_enrichment is not None and erp_enrichment.erp_type == ERPType.TALLY else "full"
+            ),
         )
     except QualityGateFailedError as exc:
         return {
@@ -169,6 +176,15 @@ def _ingest_one_parsed_document(
         "document_version": 1,
         "modification_dump": None,
         "user_id": user_id,
+        # Client-review defect registry: the SAP/Tally adapter already parses these off
+        # the raw header (erp_adapter_integration.py's ERPEnrichmentResult), but they were
+        # only ever persisted to tb_scope (never read back) -- live_document_table's own
+        # erp_system/currency columns stayed NULL regardless of what the adapter found,
+        # so the report always rendered "not declared" even when the source file had a
+        # currency column. Populate them here from the same erp_enrichment already in
+        # scope, best-effort (None when no ERP adapter ran, unchanged prior behavior).
+        "erp_system": erp_enrichment.erp_type.value if erp_enrichment else None,
+        "currency": erp_enrichment.scope.currency if erp_enrichment else None,
     }
 
     replaced_existing_document = None
@@ -187,12 +203,25 @@ def _ingest_one_parsed_document(
                 upsert_tb_erp_classification(tb_doc_id, erp_enrichment.classification_by_gl_code)
             except Exception:
                 logger.warning("ERP scope/classification persistence failed for %s; LIVE document still written", tb_doc_id, exc_info=True)
+        # Client-review defect registry: per-account mapping confidence, computed
+        # during classification (result.rows[*].trace) and previously discarded
+        # before persistence. Unconditional on erp_enrichment -- every document
+        # gets a taxonomy resolution, not just ERP-adapter-enriched ones.
+        try:
+            upsert_tb_taxonomy_resolution(tb_doc_id, result.rows)
+        except Exception:
+            logger.warning("Taxonomy resolution persistence failed for %s; LIVE document still written", tb_doc_id, exc_info=True)
     else:
         rows_written = out_df.height
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "canonical_tb.parquet"
     write_parquet_atomic(out_df, out_path)
+    if erp_enrichment is not None and erp_enrichment.container_rows:
+        # Tally Group/Head rows removed from the ledger list -- audit trail only.
+        (out_dir / "hierarchy_containers.json").write_text(
+            json.dumps(erp_enrichment.container_rows, indent=2, default=str), encoding="utf-8",
+        )
 
     message = (
         f"Ingested {rows_written} GL lines into LIVE staging as {tb_doc_id} "
@@ -216,6 +245,7 @@ def _ingest_one_parsed_document(
         "persisted_to_live": persist_to_live,
         "erp_type": erp_enrichment.erp_type.value if erp_enrichment else None,
         "erp_findings": erp_enrichment.findings if erp_enrichment else [],
+        "erp_container_rows": erp_enrichment.container_rows if erp_enrichment else [],
         "db_refs": (
             {"tb_doc_id": tb_doc_id, "table": "live_tb_table", "ingested_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
             if persist_to_live else None
@@ -492,6 +522,11 @@ def _write_canonical_from_document_and_lines(
             "entity_name": doc.get("entity_name"),
             "financial_year": doc.get("financial_year"),
             "cin": doc.get("cin"),
+            # Client-review defect registry: previously dropped even when populated on the
+            # document row -- see the same note in _ingest_one_parsed_document's doc_row.
+            "erp_system": doc.get("erp_system"),
+            "currency": doc.get("currency"),
+            "has_grouping": doc.get("has_grouping"),
         },
         tb_metadata_path,
         indent=4,

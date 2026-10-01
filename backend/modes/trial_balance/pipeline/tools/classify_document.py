@@ -33,6 +33,7 @@ from modes.trial_balance.pipeline.tools.quality_gate import (
 )
 from modes.trial_balance.pipeline.tools.resolution_metadata import attach_resolution_metadata
 from modes.trial_balance.pipeline.tools.sanity_checks import find_account_type_keyword_conflicts, find_inconsistent_same_name_groups
+from modes.trial_balance.pipeline.tools.tally_main_head_classifier import classify_tally_main_head
 from modes.trial_balance.pipeline.tools.taxonomy_repository import derive_account_type
 from modes.trial_balance.pipeline.tools.taxonomy_resolver import resolve_grouping_hints
 from modes.trial_balance.pipeline.tools.verbatim import build_verbatim_rows
@@ -80,6 +81,7 @@ def classify_tb_document(
     use_candidate_id_contract: bool = False,
     use_adaptive_candidates: bool = True,
     use_hierarchical_candidate_context: bool = True,
+    classification_depth: str = "full",
 ) -> ClassifyDocumentResult:
     """Raises QualityGateFailedError / DataQualityConfirmationRequiredError
     rather than returning a sentinel -- callers translate those into
@@ -103,7 +105,14 @@ def classify_tb_document(
     if confirmation_requirement is not None and not accept_data_quality_risk:
         raise DataQualityConfirmationRequiredError(quality_tier.tier, confirmation_requirement)
 
-    if quality_tier.tier == "CASE_1":
+    if classification_depth == "main_head":
+        # Tally: source has a group hierarchy but no sub_head_1/sub_head_2,
+        # so every row settles at main_head depth (see
+        # tally_main_head_classifier.py). Tiering and the confirmation gate
+        # above still apply unchanged.
+        rows = classify_tally_main_head(tb_rows, grouping_hints, llm_client)
+        resolutions = {}
+    elif quality_tier.tier == "CASE_1":
         # Whole document already has complete grouping data -- zero
         # resolver/DB/embedding/LLM touch for any row.
         rows = build_verbatim_rows(tb_rows, grouping_hints)
