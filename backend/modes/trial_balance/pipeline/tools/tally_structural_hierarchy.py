@@ -119,6 +119,11 @@ class StructuralRow:
     label: str
     value: float
     is_bold: bool
+    # (opening, debit, credit) of the same row. A Group's own movement and
+    # opening must equal the sum of its children's, so these disambiguate
+    # zero-closing groups and trailing zero-closing rows that closing alone
+    # cannot place. (0,0,0) = unknown/absent (reconciles trivially).
+    aux: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -128,6 +133,7 @@ class HierarchyNode:
     row_index: int
     is_group: bool
     children: Tuple["HierarchyNode", ...] = field(default_factory=tuple)
+    aux: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -202,7 +208,17 @@ def extract_structural_rows(path: Path, sheet_name: str, header_row: int, cols: 
         value_cell = row[value_col]
         value = parse_amount(value_cell.value) * sign_from_number_format(value_cell.number_format)
         bold = bool(label_cell.font.bold) if label_cell.font is not None else False
-        result.append(StructuralRow(row_index=row_index, label=label, value=value, is_bold=bold))
+
+        def _aux(field_name: str, signed: bool) -> float:
+            col = cols.get(field_name)
+            if col is None or col >= len(row):
+                return 0.0
+            cell = row[col]
+            amount = parse_amount(cell.value)
+            return amount * sign_from_number_format(cell.number_format) if signed else amount
+
+        aux = (_aux("opening", True), _aux("debit", False), _aux("credit", False))
+        result.append(StructuralRow(row_index=row_index, label=label, value=value, is_bold=bold, aux=aux))
     return result
 
 
@@ -220,6 +236,8 @@ class _Option:
 # Cap on distinct (cumulative-sum) states kept per row position while
 # searching for a reconciling child chain -- bounds worst-case work.
 _MAX_STATES_PER_POSITION = 32
+# Distinct (opening, debit, credit) sums retained per closing-sum state.
+_MAX_AUX_ALTERNATIVES = 4
 
 
 class _Parser:
@@ -264,22 +282,27 @@ class _Parser:
     def _resolve_options(self, i: int, end: int) -> List[_Option]:
         row = self._rows[i]
         leaf = _Option(
-            HierarchyNode(label=row.label, value=row.value, row_index=row.row_index, is_group=False), i + 1, 0,
+            HierarchyNode(
+                label=row.label, value=row.value, row_index=row.row_index, is_group=False, aux=row.aux,
+            ), i + 1, 0,
         )
-        if abs(row.value) <= self._tolerance:
-            return [leaf]  # zero rows are never group candidates
-        match = self._match_children(i + 1, end, row.value)
+        zero_closing = abs(row.value) <= self._tolerance
+        if zero_closing and not any(abs(a) > self._tolerance for a in row.aux):
+            return [leaf]  # nothing to reconcile on at all
+        match = self._match_children(i + 1, end, row.value, row.aux, zero_closing)
         if match is None:
             return [leaf]
         children, next_i, was_ambiguous, soft_inside = match
         # Zero-valued children carry no reconciliation evidence, so they
         # must not by themselves satisfy the >=2-children gate.
-        nonzero_children = sum(1 for c in children if abs(c.value) > self._tolerance)
+        nonzero_children = sum(
+            1 for c in children if abs(c.value) > self._tolerance or any(abs(a) > self._tolerance for a in c.aux)
+        )
         strict = nonzero_children >= 2 or row.is_bold or _normalize_label(row.label) in _KNOWN_TALLY_SUB_GROUPS
         group = _Option(
             HierarchyNode(
                 label=row.label, value=row.value, row_index=row.row_index,
-                is_group=True, children=tuple(children),
+                is_group=True, children=tuple(children), aux=row.aux,
             ),
             next_i, soft_inside + (0 if strict else 1),
         )
@@ -289,45 +312,69 @@ class _Parser:
 
     def _match_children(
         self, start: int, end: int, target_value: float,
+        target_aux: Tuple[float, float, float] = (0.0, 0.0, 0.0), zero_closing: bool = False,
     ) -> Optional[Tuple[List[HierarchyNode], int, bool, int]]:
         """Forward search over sibling-subtree alternatives for a chain
-        whose values sum to target_value. States are merged by cumulative
-        sum (so a position never fans out beyond distinct sums). Returns
-        the LONGEST reconciling chain (fewest soft groups on ties), whether
-        more than one chain length reconciled, and its soft-group count."""
-        scale = 1.0 / self._tolerance
-        # states[pos][key] = (cumulative, soft, prev_state, node)
-        states: Dict[int, Dict[int, tuple]] = {start: {0: (0.0, 0, None, None)}}
-        matches: List[Tuple[int, int, tuple]] = []  # (next_index, soft, state)
+        whose closing values sum to target_value. A chain whose
+        (opening, debit, credit) sums ALSO equal target_aux is preferred
+        over one that only matches on closing -- this is what keeps
+        trailing zero-closing rows with movement out of the wrong group.
+        For a zero-closing candidate the aux match is mandatory (otherwise
+        every prefix of zero rows would 'reconcile'). States are merged by
+        (closing, aux) so a position never fans out beyond distinct sums.
+        Returns the LONGEST preferred chain (fewest soft groups on ties),
+        whether more than one chain length reconciled, and its soft count."""
+        tol = self._tolerance
+        scale = 1.0 / tol
+        zero3 = (0.0, 0.0, 0.0)
+        # states[pos][key] = (cumulative, aux_sums, soft, prev_state, node)
+        states: Dict[int, Dict[int, List[tuple]]] = {start: {0: [(0.0, zero3, 0, None, None)]}}
+        matches: List[Tuple[int, int, tuple, bool]] = []  # (next_index, soft, state, aux_ok)
         for pos in range(start, end):
             here = states.pop(pos, None)
             if not here:
                 continue
-            for state in here.values():
-                cum, soft, _, _ = state
+            for state in [st for group in here.values() for st in group]:
+                cum, aux, soft, _, _ = state
                 for option in self._memo[pos]:
                     q = option.next_index
                     ncum = cum + option.node.value
+                    naux = tuple(x + y for x, y in zip(aux, option.node.aux))
                     nsoft = soft + option.soft
-                    nstate = (ncum, nsoft, state, option.node)
+                    nstate = (ncum, naux, nsoft, state, option.node)
                     bucket = states.setdefault(q, {})
-                    key = int(round(ncum * scale))
-                    if key not in bucket or bucket[key][1] > nsoft:
-                        if len(bucket) < _MAX_STATES_PER_POSITION or key in bucket:
-                            bucket[key] = nstate
-                    if abs(ncum - target_value) <= self._tolerance:
-                        matches.append((q, nsoft, nstate))
+                    ckey = int(round(ncum * scale))
+                    if ckey in bucket or len(bucket) < _MAX_STATES_PER_POSITION:
+                        group = bucket.setdefault(ckey, [])
+                        same = next(
+                            (k for k, st in enumerate(group)
+                             if all(abs(x - y) <= tol for x, y in zip(st[1], naux))), None,
+                        )
+                        if same is not None:
+                            if group[same][2] > nsoft:
+                                group[same] = nstate
+                        elif len(group) < _MAX_AUX_ALTERNATIVES:
+                            group.append(nstate)
+                        else:
+                            worst = max(range(len(group)), key=lambda k: group[k][2])
+                            if group[worst][2] > nsoft:
+                                group[worst] = nstate
+                    if abs(ncum - target_value) <= tol:
+                        aux_ok = all(abs(x - y) <= tol for x, y in zip(naux, target_aux))
+                        if aux_ok or not zero_closing:
+                            matches.append((q, nsoft, nstate, aux_ok))
         if not matches:
             return None
-        best_q = max(m[0] for m in matches)
-        best = min((m for m in matches if m[0] == best_q), key=lambda m: m[1])
+        pool = [m for m in matches if m[3]] or matches
+        best_q = max(m[0] for m in pool)
+        best = min((m for m in pool if m[0] == best_q), key=lambda m: m[1])
         chain: List[HierarchyNode] = []
         state = best[2]
-        while state is not None and state[3] is not None:
-            chain.append(state[3])
-            state = state[2]
+        while state is not None and state[4] is not None:
+            chain.append(state[4])
+            state = state[3]
         chain.reverse()
-        distinct_ends = len({m[0] for m in matches})
+        distinct_ends = len({m[0] for m in pool})
         return chain, best_q, distinct_ends > 1, best[1]
 
 

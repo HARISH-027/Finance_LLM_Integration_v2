@@ -59,5 +59,5 @@ class TestNormalizeTallyRows:
     def test_real_ktpo_nets_to_zero_and_removes_groups(self):
         name, header_row, cols, rows = _parse(_KTPO)
         result = normalize_tally_rows(_KTPO, name, header_row, cols, rows)
-        assert len(result.container_rows) == 41 and len(result.ledger_rows) == 203
+        assert len(result.container_rows) == 42 and len(result.ledger_rows) == 202
         assert abs(sum(r.closing for r in result.ledger_rows)) < 0.01

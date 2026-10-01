@@ -261,6 +261,7 @@ export function tbUploadMapped(mode, { token, groupingToken, acceptDataQualityRi
     cin: cd.cin || null,
     financial_year: cd.financialYear || null,
     standard: cd.standard || null,
+    erp_type: cd.erpType || null,
     // Omitted -> backend default True (the ordinary upload-and-audit path).
     // False is the query-analysis staging path (TbRunPicker's 'query' mode):
     // same classify/quality-gate chain, canonical_tb.parquet still written,

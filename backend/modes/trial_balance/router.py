@@ -137,6 +137,11 @@ class UploadMappedRequest(BaseModel):
     cin: Optional[str] = None
     financial_year: Optional[str] = None
     standard: Optional[str] = None
+    # Optional ERP source of the uploaded TB ("tally"/"sap"/"oracle"); blank
+    # keeps ingest_tb_to_live's auto-detection. Opts the document into that
+    # ERP's adapter (e.g. Tally: Dr/Cr re-signing, Group/Ledger split,
+    # main_head-only classification).
+    erp_type: Optional[str] = None
     # False for the query-analysis staging flow (TbRunPicker's 'query' mode) --
     # runs the identical classify/quality-gate chain and still writes
     # canonical_tb.parquet, but never writes to LIVE. True (default) is the
@@ -307,6 +312,7 @@ def upload_mapped(request: UploadMappedRequest, user: CurrentUser = Depends(requ
             cin=request.cin,
             financial_year=request.financial_year,
             standard=request.standard,
+            erp_type=request.erp_type or None,
             persist_to_live=request.persist_to_live,
             user_id=user.user_id,
         )
