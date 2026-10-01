@@ -12,6 +12,7 @@
   "areas": {
     "revenue": {
       "match": ["revenue from operations", "revenue", "sales", "other income", "income from"],
+      "exclude": ["loss on sale", "loss on disposal", "loss on sales"],
       "assertions": ["Occurrence", "Completeness", "Accuracy", "Cut-off", "Classification"],
       "evidence": [
         "Sales register for the period",
@@ -105,6 +106,7 @@
     },
     "loans_advances_deposits": {
       "match": ["loans and advances", "loan given", "advance to", "staff advance", "security deposit", "deposit", "earnest money", "emd", "retention money", "inter corporate deposit", "icd"],
+      "account_types": ["Asset"],
       "assertions": ["Existence", "Valuation", "Rights", "Recoverability"],
       "evidence": [
         "Party-wise ageing of advances and deposits",
@@ -118,7 +120,8 @@
       "regularity_flag": true
     },
     "trade_payables_msme": {
-      "match": ["trade payable", "sundry creditor", "creditors", "payable to", "msme", "micro enterprise", "small enterprise", "gr/ir", "goods received not invoiced"],
+      "match": ["trade payable", "sundry creditor", "creditors", "payable to", "msme", "micro enterprise", "small enterprise", "gr/ir", "goods received not invoiced", "retention money"],
+      "account_types": ["Liability"],
       "assertions": ["Completeness", "Obligation", "Cut-off", "Classification"],
       "evidence": [
         "Payables ageing in Schedule III format",
@@ -146,7 +149,7 @@
       "primary_objective": "Verify completeness of borrowings and the related finance cost."
     },
     "payroll_statutory_dues": {
-      "match": ["salary", "salaries", "wages", "employee benefit", "staff cost", "remuneration", "gratuity", "leave encashment", "provident fund", "pf", "esi", "tds", "professional tax", "gst", "income tax", "duty", "cess"],
+      "match": ["salary", "salaries", "wages", "employee benefit", "staff cost", "remuneration", "gratuity", "leave encashment", "provident fund", "pf", "esi", "tds", "professional tax", " gst ", "income tax", "duty", "cess"],
       "assertions": ["Completeness", "Accuracy", "Valuation"],
       "evidence": [
         "Payroll register and headcount reconciliation",
@@ -297,6 +300,81 @@
         "Subsequent payment evidence after the period end"
       ],
       "regularity_flag": true
+    },
+    "grant_subsidy": {
+      "assertions": ["Completeness", "Classification", "Presentation"],
+      "evidence": [
+        "Sanction letter or grant order",
+        "Utilisation certificate and conditions attached to the grant",
+        "Compliance with grant conditions and any refund contingency",
+        "Government/authority correspondence",
+        "Grant recognition policy and basis (income vs capital grant)"
+      ]
+    },
+    "deposit": {
+      "assertions": ["Existence", "Valuation", "Recoverability"],
+      "evidence": [
+        "Deposit receipts or counterparty confirmations",
+        "Contract terms specifying deposit/EMD/retention conditions",
+        "Ageing and recoverability assessment",
+        "Refund or release correspondence",
+        "Bank guarantee documentation where the deposit is BG-backed"
+      ]
+    },
+    "advance": {
+      "assertions": ["Existence", "Valuation", "Recoverability", "Completeness"],
+      "evidence": [
+        "Advance/mobilisation agreement and bank guarantee details",
+        "Recovery/adjustment schedule against running bills or supplies",
+        "Party-wise ageing",
+        "Subsequent adjustment or recovery evidence",
+        "Management assessment of recoverability for long-outstanding advances"
+      ]
+    },
+    "claims": {
+      "assertions": ["Existence", "Valuation", "Recoverability"],
+      "evidence": [
+        "Claim correspondence, arbitration or litigation records",
+        "Basis for recognition of the claim",
+        "Management assessment of recoverability and probability of success",
+        "Subsequent settlement or award evidence"
+      ]
+    },
+    "withheld_recoverable": {
+      "assertions": ["Existence", "Valuation", "Recoverability"],
+      "evidence": [
+        "Customer/vendor-wise ageing",
+        "Withholding certificates or the underlying contract clause",
+        "Party confirmations",
+        "Subsequent recovery evidence"
+      ]
+    },
+    "suspense_control": {
+      "assertions": ["Existence", "Classification", "Completeness"],
+      "evidence": [
+        "Reconciliation of the suspense/clearing/control balance",
+        "Ageing analysis of unresolved items",
+        "Clearance, write-off or transfer approvals",
+        "Explanation of the underlying nature of the balance"
+      ]
+    },
+    "exceptional_item": {
+      "assertions": ["Classification", "Presentation", "Occurrence"],
+      "evidence": [
+        "Board approval or minutes for the exceptional item",
+        "Basis for classifying the item as exceptional/one-time",
+        "Supporting computation of the amount",
+        "Disclosure working per the applicable framework"
+      ]
+    },
+    "remission": {
+      "assertions": ["Existence", "Completeness", "Classification"],
+      "evidence": [
+        "Government remission order or notification",
+        "Eligibility-criteria assessment",
+        "Basis for the accounting treatment applied",
+        "Correspondence with the granting authority"
+      ]
     }
   }
 }

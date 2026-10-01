@@ -7,13 +7,14 @@ Persists ScopeMetadata (tb_scope table) and ClassificationEvidence
 existing home anywhere in this schema. tb_validation_result/tb_artifact were
 NOT added as new tables: pipeline_findings/pipeline_artifacts (db.py's
 existing add_findings/record_tool_artifacts) already cover that need.
-tb_taxonomy_resolution was deliberately not added -- tb_models.py's
-TaxonomyResolution dataclass states it is "never persisted as a DB column";
-overriding that is an open decision (design doc section 35), not made here.
+tb_taxonomy_resolution's own open decision (design doc section 35) has since
+been made -- see taxonomy_resolution_persistence.py (migration 0005), kept
+as its own module since taxonomy resolution applies to every TB regardless
+of ERP type, not an ERP-adaptability concern specifically.
 
-Purely additive: not wired into input_dispatch.py/db_bridge.py's live
-ingestion path. Imports db.py's existing db_cursor/add_findings rather than
-modifying db.py itself.
+Wired into db_bridge.py's live ingestion path (_ingest_one_parsed_document).
+Imports db.py's existing db_cursor/add_findings rather than modifying db.py
+itself.
 """
 
 from __future__ import annotations

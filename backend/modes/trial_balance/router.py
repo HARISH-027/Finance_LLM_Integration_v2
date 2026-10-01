@@ -860,7 +860,26 @@ def _run_core_analytics_chain(canonical_tb_file: str, output_dir: str) -> None:
     # read, so it must precede them. build_normalisation_note records what was done
     # to the numbers before analysis, and sec 4.2 requires that note to precede any
     # audit finding.
-    run("build_engagement_context", canonical_tb_file=canonical_tb_file, output_dir=output_dir)
+    # Client-review defect registry: currency/source_system were always passed as
+    # None here, so build_engagement_context always fell back to "unknown" regardless
+    # of what the SAP/ERP adapter captured at ingestion (db_bridge.py's doc_row is the
+    # source of truth; tb_metadata.json is its already-established downstream copy,
+    # same file _tb_filename_suffix above reads defensively). Best-effort: an absent
+    # or unreadable tb_metadata.json leaves this call exactly as it was before.
+    tb_erp_system = tb_currency = None
+    tb_metadata_path = out_dir / "tb_metadata.json"
+    if tb_metadata_path.exists():
+        try:
+            with open(tb_metadata_path, "r") as f:
+                _tb_meta = json.load(f)
+            tb_erp_system = _tb_meta.get("erp_system")
+            tb_currency = _tb_meta.get("currency")
+        except Exception:
+            logger.warning("Could not read tb_metadata.json for erp_system/currency at output_dir=%s", output_dir)
+    run(
+        "build_engagement_context", canonical_tb_file=canonical_tb_file, output_dir=output_dir,
+        currency=tb_currency, source_system=tb_erp_system,
+    )
     run(
         "build_normalisation_note",
         canonical_tb_file=canonical_tb_file,
